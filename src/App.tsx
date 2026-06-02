@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { supabase } from './lib/supabase';
+import { dataService } from './lib/dataService';
 import EmployeeList from './components/EmployeeList';
 import EmployeeDetail from './components/EmployeeDetail';
 import SkillsAnalytics from './components/SkillsAnalytics';
@@ -20,38 +20,7 @@ function App() {
   const fetchEmployees = async () => {
     try {
       setError(null);
-      const { data: employeesData, error: employeesError } = await supabase
-        .from('employees')
-        .select('*')
-        .order('name');
-
-      if (employeesError) throw employeesError;
-
-      if (!employeesData) {
-        throw new Error('No employees data received');
-      }
-
-      const employeesWithSkills = await Promise.all(
-        employeesData.map(async (employee) => {
-          const { data: skillsData, error: skillsError } = await supabase
-            .from('employee_skills')
-            .select('skill')
-            .eq('employee_id', employee.id);
-
-          if (skillsError) throw skillsError;
-
-          const { data: favoriteData } = await supabase
-            .from('employee_favorites')
-            .select('id')
-            .eq('employee_id', employee.id);
-
-          return {
-            ...employee,
-            skills: skillsData?.map(s => s.skill) || [],
-            is_favorite: favoriteData && favoriteData.length > 0
-          };
-        })
-      );
+      const employeesWithSkills = await dataService.listEmployees();
 
       setEmployees(employeesWithSkills);
       setFilteredEmployees(showFavorites 
@@ -138,6 +107,11 @@ function App() {
 
         {/* Main content */}
         <div className="flex-1 overflow-auto">
+          {error && (
+            <div className="border-b border-amber-200 bg-amber-50 px-6 py-3 text-sm text-amber-800">
+              {error}
+            </div>
+          )}
           <Routes>
             <Route 
               path="/" 

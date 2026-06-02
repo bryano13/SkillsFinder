@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, UserRound, Briefcase, Calendar, Award, Star, Linkedin, Edit2, X, Plus, Trash2, ExternalLink, Save } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import { dataService } from '../lib/dataService';
 import type { Employee, Certification } from '../types';
 
 export default function EmployeeDetail() {
@@ -18,6 +18,7 @@ export default function EmployeeDetail() {
   const [editingCertification, setEditingCertification] = useState<string | null>(null);
   const [isEditingSkills, setIsEditingSkills] = useState(false);
   const [editedSkillRatings, setEditedSkillRatings] = useState<Record<string, number>>({});
+  const [isDeletingEmployee, setIsDeletingEmployee] = useState(false);
   const [newCertification, setNewCertification] = useState({
     title: '',
     udemy_url: '',
@@ -27,46 +28,20 @@ export default function EmployeeDetail() {
   useEffect(() => {
     const fetchEmployeeDetails = async () => {
       try {
-        const { data: employeeData, error: employeeError } = await supabase
-          .from('employees')
-          .select('*')
-          .eq('id', id)
-          .single();
+        if (!id) {
+          throw new Error('Employee not found');
+        }
 
-        if (employeeError) throw employeeError;
+        const employeeData = await dataService.getEmployee(id);
 
         if (!employeeData) {
           throw new Error('Employee not found');
         }
 
-        const { data: skillsData, error: skillsError } = await supabase
-          .from('employee_skills')
-          .select('skill')
-          .eq('employee_id', id);
+        const certificationsData = await dataService.listCertifications(id);
 
-        if (skillsError) throw skillsError;
-
-        const { data: favoriteData } = await supabase
-          .from('employee_favorites')
-          .select('id')
-          .eq('employee_id', id);
-
-        const { data: certificationsData, error: certificationsError } = await supabase
-          .from('employee_certifications')
-          .select('*')
-          .eq('employee_id', id)
-          .order('completed_at', { ascending: false });
-
-        if (certificationsError) throw certificationsError;
-
-        const employeeWithSkills = {
-          ...employeeData,
-          skills: skillsData?.map(s => s.skill) || [],
-          is_favorite: favoriteData && favoriteData.length > 0
-        };
-
-        setEmployee(employeeWithSkills);
-        setEditedSkillRatings(employeeWithSkills.skill_ratings || {});
+        setEmployee(employeeData);
+        setEditedSkillRatings(employeeData.skill_ratings || {});
         setCertifications(certificationsData || []);
         setLinkedInUrl(employeeData.linkedin_url || '');
       } catch (error) {
@@ -84,22 +59,8 @@ export default function EmployeeDetail() {
     if (!employee) return;
 
     try {
-      if (employee.is_favorite) {
-        const { error } = await supabase
-          .from('employee_favorites')
-          .delete()
-          .eq('employee_id', employee.id);
-        
-        if (error) throw error;
-      } else {
-        const { error } = await supabase
-          .from('employee_favorites')
-          .insert({ employee_id: employee.id });
-        
-        if (error) throw error;
-      }
-
-      setEmployee(prev => prev ? { ...prev, is_favorite: !prev.is_favorite } : null);
+      const updatedEmployee = await dataService.toggleFavorite(employee);
+      setEmployee(updatedEmployee);
     } catch (error) {
       console.error('Error toggling favorite:', error);
       setError('Failed to update favorite status');
@@ -111,12 +72,7 @@ export default function EmployeeDetail() {
 
     try {
       setIsUpdating(true);
-      const { error } = await supabase
-        .from('employees')
-        .update({ linkedin_url: linkedInUrl })
-        .eq('id', employee.id);
-
-      if (error) throw error;
+      await dataService.updateLinkedInUrl(employee.id, linkedInUrl);
 
       setEmployee(prev => prev ? { ...prev, linkedin_url: linkedInUrl } : null);
       setIsEditingLinkedIn(false);
@@ -133,12 +89,7 @@ export default function EmployeeDetail() {
 
     try {
       setIsUpdating(true);
-      const { error } = await supabase
-        .from('employees')
-        .update({ skill_ratings: editedSkillRatings })
-        .eq('id', employee.id);
-
-      if (error) throw error;
+      await dataService.updateSkillRatings(employee.id, editedSkillRatings);
 
       setEmployee(prev => prev ? { ...prev, skill_ratings: editedSkillRatings } : null);
       setIsEditingSkills(false);
@@ -156,18 +107,11 @@ export default function EmployeeDetail() {
 
     try {
       setIsUpdating(true);
-      const { data, error } = await supabase
-        .from('employee_certifications')
-        .insert({
-          employee_id: employee.id,
-          title: newCertification.title,
-          udemy_url: newCertification.udemy_url,
-          completed_at: new Date(newCertification.completed_at).toISOString()
-        })
-        .select()
-        .single();
-
-      if (error) throw error;
+      const data = await dataService.addCertification(employee.id, {
+        title: newCertification.title,
+        udemy_url: newCertification.udemy_url,
+        completed_at: new Date(newCertification.completed_at).toISOString(),
+      });
 
       setCertifications(prev => [data, ...prev]);
       setShowNewCertification(false);
@@ -187,16 +131,7 @@ export default function EmployeeDetail() {
   const handleUpdateCertification = async (cert: Certification) => {
     try {
       setIsUpdating(true);
-      const { error } = await supabase
-        .from('employee_certifications')
-        .update({
-          title: cert.title,
-          udemy_url: cert.udemy_url,
-          completed_at: new Date(cert.completed_at).toISOString()
-        })
-        .eq('id', cert.id);
-
-      if (error) throw error;
+      await dataService.updateCertification(cert);
 
       setCertifications(prev => 
         prev.map(c => c.id === cert.id ? cert : c)
@@ -212,17 +147,30 @@ export default function EmployeeDetail() {
 
   const handleDeleteCertification = async (certificationId: string) => {
     try {
-      const { error } = await supabase
-        .from('employee_certifications')
-        .delete()
-        .eq('id', certificationId);
-
-      if (error) throw error;
+      await dataService.deleteCertification(certificationId);
 
       setCertifications(prev => prev.filter(cert => cert.id !== certificationId));
     } catch (error) {
       console.error('Error deleting certification:', error);
       setError('Failed to delete certification');
+    }
+  };
+
+  const handleDeleteEmployee = async () => {
+    if (!employee) return;
+
+    const confirmed = window.confirm(`Delete ${employee.name}? This cannot be undone.`);
+    if (!confirmed) return;
+
+    try {
+      setIsDeletingEmployee(true);
+      await dataService.deleteEmployee(employee.id);
+      navigate('/');
+    } catch (error) {
+      console.error('Error deleting employee:', error);
+      setError('Failed to delete employee');
+    } finally {
+      setIsDeletingEmployee(false);
     }
   };
 
@@ -348,16 +296,26 @@ export default function EmployeeDetail() {
                       </div>
                     )}
                   </div>
-                  <button
-                    onClick={handleToggleFavorite}
-                    className={`p-2 rounded-full transition-colors ${
-                      employee.is_favorite 
-                        ? 'bg-white/10 text-yellow-300 hover:bg-white/20' 
-                        : 'text-white/70 hover:text-white hover:bg-white/10'
-                    }`}
-                  >
-                    <Star size={24} className={employee.is_favorite ? 'fill-yellow-300' : ''} />
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleDeleteEmployee}
+                      disabled={isDeletingEmployee}
+                      className="p-2 rounded-full text-white/70 hover:text-white hover:bg-red-500/30 transition-colors disabled:opacity-50"
+                      title="Delete Employee"
+                    >
+                      <Trash2 size={24} />
+                    </button>
+                    <button
+                      onClick={handleToggleFavorite}
+                      className={`p-2 rounded-full transition-colors ${
+                        employee.is_favorite 
+                          ? 'bg-white/10 text-yellow-300 hover:bg-white/20' 
+                          : 'text-white/70 hover:text-white hover:bg-white/10'
+                      }`}
+                    >
+                      <Star size={24} className={employee.is_favorite ? 'fill-yellow-300' : ''} />
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
