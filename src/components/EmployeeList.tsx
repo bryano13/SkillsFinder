@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, UserRound, Edit2, Plus, XCircle, X, Upload, Clock, Star, Globe, User } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import { Search, UserRound, Edit2, Plus, XCircle, X, Upload, Clock, Star, Globe, User, Trash2 } from 'lucide-react';
+import { dataService } from '../lib/dataService';
 import type { Employee } from '../types';
 
 // List of countries with reliable flag URLs
@@ -91,6 +91,7 @@ export default function EmployeeList({
   const [experienceFilter, setExperienceFilter] = useState<string>('all');
   const [searchName, setSearchName] = useState('');
   const [selectedCountry, setSelectedCountry] = useState<string>('');
+  const [deletingEmployeeId, setDeletingEmployeeId] = useState<string | null>(null);
 
   const handleSearch = (skillsValue: string) => {
     setSearchSkills(skillsValue);
@@ -164,31 +165,18 @@ export default function EmployeeList({
   const handleToggleFavorite = async (e: React.MouseEvent, employee: Employee) => {
     e.stopPropagation();
     try {
-      if (employee.is_favorite) {
-        const { error } = await supabase
-          .from('employee_favorites')
-          .delete()
-          .eq('employee_id', employee.id);
-        
-        if (error) throw error;
-      } else {
-        const { error } = await supabase
-          .from('employee_favorites')
-          .insert({ employee_id: employee.id });
-        
-        if (error) throw error;
-      }
+      const updatedEmployee = await dataService.toggleFavorite(employee);
 
       const updatedEmployees = employees.map(emp => 
         emp.id === employee.id 
-          ? { ...emp, is_favorite: !emp.is_favorite }
+          ? updatedEmployee
           : emp
       );
       setEmployees(updatedEmployees);
       
       const updatedFiltered = filteredEmployees.map(emp => 
         emp.id === employee.id 
-          ? { ...emp, is_favorite: !emp.is_favorite }
+          ? updatedEmployee
           : emp
       );
       setFilteredEmployees(updatedFiltered);
@@ -205,25 +193,7 @@ export default function EmployeeList({
     try {
       setUploadingAvatar(employeeId);
       setError(null);
-
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${employeeId}-${Math.random()}.${fileExt}`;
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from('avatars')
-        .upload(fileName, file);
-
-      if (uploadError) throw uploadError;
-
-      const { data: { publicUrl } } = supabase.storage
-        .from('avatars')
-        .getPublicUrl(fileName);
-
-      const { error: updateError } = await supabase
-        .from('employees')
-        .update({ avatar_url: publicUrl })
-        .eq('id', employeeId);
-
-      if (updateError) throw updateError;
+      const publicUrl = await dataService.uploadEmployeeAvatar(employeeId, file);
 
       if (editingEmployee && editingEmployee.id === employeeId) {
         setEditingEmployee(prev => prev ? { ...prev, avatar_url: publicUrl } : null);
@@ -288,6 +258,32 @@ export default function EmployeeList({
     setShowEditEmployeeModal(true);
   };
 
+  const handleDeleteEmployee = async (employee: Employee, e: React.MouseEvent) => {
+    e.stopPropagation();
+
+    const confirmed = window.confirm(`Delete ${employee.name}? This cannot be undone.`);
+    if (!confirmed) return;
+
+    try {
+      setDeletingEmployeeId(employee.id);
+      setError(null);
+      await dataService.deleteEmployee(employee.id);
+
+      setEmployees(prev => prev.filter(emp => emp.id !== employee.id));
+      setFilteredEmployees(prev => prev.filter(emp => emp.id !== employee.id));
+
+      if (editingEmployee?.id === employee.id) {
+        setShowEditEmployeeModal(false);
+        setEditingEmployee(null);
+      }
+    } catch (error) {
+      console.error('Error deleting employee:', error);
+      setError('Failed to delete employee. Please try again.');
+    } finally {
+      setDeletingEmployeeId(null);
+    }
+  };
+
   const handleUpdateEmployee = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingEmployee) return;
@@ -301,35 +297,7 @@ export default function EmployeeList({
     setError(null);
 
     try {
-      const { error: updateError } = await supabase
-        .from('employees')
-        .update({
-          name: editingEmployee.name.trim(),
-          title: editingEmployee.title.trim(),
-          years_of_experience: editingEmployee.years_of_experience,
-          country_code: editingEmployee.country_code
-        })
-        .eq('id', editingEmployee.id);
-
-      if (updateError) throw updateError;
-
-      const { error: deleteError } = await supabase
-        .from('employee_skills')
-        .delete()
-        .eq('employee_id', editingEmployee.id);
-
-      if (deleteError) throw deleteError;
-
-      const skillsToInsert = editingEmployee.skills.map(skill => ({
-        employee_id: editingEmployee.id,
-        skill: skill
-      }));
-
-      const { error: skillsError } = await supabase
-        .from('employee_skills')
-        .insert(skillsToInsert);
-
-      if (skillsError) throw skillsError;
+      await dataService.updateEmployee(editingEmployee);
 
       setShowEditEmployeeModal(false);
       setEditingEmployee(null);
@@ -354,35 +322,13 @@ export default function EmployeeList({
     setError(null);
 
     try {
-      const employeeToCreate = {
+      await dataService.createEmployee({
         name: newEmployee.name.trim(),
         title: newEmployee.title.trim(),
         years_of_experience: newEmployee.years_of_experience,
-        country_code: newEmployee.country_code
-      };
-      
-      const { data: employeeData, error: employeeError } = await supabase
-        .from('employees')
-        .insert(employeeToCreate)
-        .select()
-        .single();
-
-      if (employeeError) throw employeeError;
-
-      if (!employeeData) {
-        throw new Error('No employee data returned after insert');
-      }
-
-      const skillsToInsert = newEmployee.skills.map(skill => ({
-        employee_id: employeeData.id,
-        skill: skill
-      }));
-
-      const { error: skillsError } = await supabase
-        .from('employee_skills')
-        .insert(skillsToInsert);
-
-      if (skillsError) throw skillsError;
+        country_code: newEmployee.country_code,
+        skills: newEmployee.skills,
+      });
 
       setNewEmployee({
         name: '',
@@ -587,8 +533,17 @@ export default function EmployeeList({
                       <button
                         onClick={(e) => startEditing(employee, e)}
                         className="p-1 text-gray-400 hover:text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Edit employee"
                       >
                         <Edit2 size={16} />
+                      </button>
+                      <button
+                        onClick={(e) => handleDeleteEmployee(employee, e)}
+                        disabled={deletingEmployeeId === employee.id}
+                        className="p-1 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-50"
+                        title="Delete employee"
+                      >
+                        <Trash2 size={16} />
                       </button>
                     </div>
                   </div>
